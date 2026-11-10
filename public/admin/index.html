@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Admin</title>
+<style>
+:root{--bg:#0a1020;--panel:#111a30;--line:#24304d;--ink:#f1ede4;--mute:#8d97ab;--gold:#d9b97a;--ok:#7fd1a8;--err:#ff8f8f}
+*{box-sizing:border-box;margin:0}
+body{font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:22px 16px 60px}
+main{max-width:640px;margin:0 auto}
+h1{font:600 1.6rem Georgia,serif;margin-bottom:18px}
+h2{font-size:1rem;margin:26px 0 10px}
+label{display:block;color:var(--mute);font-size:.82rem;margin:12px 0 5px}
+input,textarea{width:100%;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.row{display:flex;gap:8px}.row>*{flex:1}
+button{font:600 .9rem system-ui;border-radius:10px;padding:11px 16px;border:1px solid var(--gold);background:transparent;color:var(--gold);cursor:pointer}
+button.p{background:var(--gold);color:#1a1405}
+.m{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px;background:var(--panel)}
+.m input{background:var(--bg);margin-bottom:8px}
+.msg{margin-top:10px;min-height:1.3em;font-size:.9rem}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;word-break:break-all}
+th{color:var(--mute);font-weight:500}
+#app{display:none}
+.modes{display:flex;gap:8px;margin-bottom:10px}.modes button{flex:1}.modes button.on{background:var(--gold);color:#1a1405}
+.th{display:grid;grid-template-columns:1fr 1fr;gap:10px}.chip{border:1px solid var(--line);border-radius:12px;padding:10px;background:var(--panel);cursor:pointer}
+.chip.on{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold)}.chip .sw{height:34px;border-radius:8px;margin-bottom:8px;display:flex;align-items:flex-end;padding:5px}.chip .sw i{height:6px;width:55%;border-radius:3px}
+.chip b{display:block;font-size:.9rem}.chip a{font-size:.78rem;color:var(--mute)}</style></head><body><main>
+<h1>Admin</h1>
+<div id="login"><label>Password</label><input id="pw" type="password" autocomplete="current-password">
+<div class="row" style="margin-top:12px"><button class="p" id="in">Sign in</button></div><div class="msg" id="lm" style="color:var(--err)"></div></div>
+
+<div id="app">
+<h2>Group</h2>
+<label>Group ID (e.g. -1001234567890)</label>
+<div class="row"><input id="gid" inputmode="numeric"><button id="chk" style="flex:none">Check</button></div>
+<div class="msg" id="cm"></div>
+<label>Group name</label><input id="gn">
+<label>Tagline</label><input id="tl">
+<div class="row"><div><label>Price (USDT)</label><input id="pr" inputmode="decimal"></div><div><label>Support link</label><input id="su" placeholder="https://t.me/yourname"></div></div>
+
+<h2>Website theme</h2>
+<div class="modes"><button id="mfix">One theme for everyone</button><button id="mrot">Rotate for each new visitor</button></div>
+<div class="msg" id="thn" style="color:var(--mute);margin:0 0 10px"></div><div class="th" id="th"></div>
+
+<h2>Payment methods</h2><div id="ms"></div>
+<button id="add">Add method</button>
+<div class="row" style="margin-top:22px"><button class="p" id="save">Save changes</button></div>
+<div class="msg" id="sm"></div>
+
+<h2>Recent payments</h2>
+<table><thead><tr><th>Transaction</th><th>Time</th><th>Status</th></tr></thead><tbody id="log"></tbody></table>
+</div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const TL=[["ledger","Ledger","#fff","#0f3d2e"],["exchange","Exchange","#0b0e11","#fcd535"],["pass","Pass","#0c0c0f","#c9a95c"],["neon","Neon glass","#1b1040","#22d3ee"],["bold","Bold","#eceaf6","#ff4d2e"],["club","Club","#06231c","#c7a35a"]];
+let TH={mode:"fixed",fixed:"club",rotate:[]};
+function renderThemes(){
+  $("mfix").classList.toggle("on",TH.mode==="fixed"); $("mrot").classList.toggle("on",TH.mode==="rotate");
+  $("thn").textContent = TH.mode==="fixed" ? "Everyone sees the selected theme." : "Select 2 or more. Each new visitor gets the next one in order and keeps it on return visits.";
+  const box=$("th"); box.innerHTML="";
+  TL.forEach(([id,name,bg,ac])=>{
+    const on = TH.mode==="fixed" ? TH.fixed===id : TH.rotate.includes(id);
+    const c=document.createElement("div"); c.className="chip"+(on?" on":"");
+    const sw=document.createElement("div"); sw.className="sw"; sw.style.background=bg; const bar=document.createElement("i"); bar.style.background=ac; sw.appendChild(bar);
+    const t=document.createElement("b"); t.textContent=name;
+    const a=document.createElement("a"); a.href="/?preview="+id; a.target="_blank"; a.rel="noopener"; a.textContent="Preview"; a.onclick=e=>e.stopPropagation();
+    c.append(sw,t,a);
+    c.onclick=()=>{ if(TH.mode==="fixed") TH.fixed=id; else TH.rotate = TH.rotate.includes(id)?TH.rotate.filter(x=>x!==id):[...TH.rotate,id]; renderThemes(); };
+    box.appendChild(c);
+  });
+}
+let pw = sessionStorage.getItem("apw") || "";
+const api = (body) => fetch("/api/admin", body ? { method: "POST", headers: { "Content-Type": "application/json", "x-admin-password": pw }, body: JSON.stringify(body) } : { headers: { "x-admin-password": pw } });
+
+function row(m = {}) {
+  const d = document.createElement("div"); d.className = "m";
+  [["label", "Label (e.g. USDT · TRC20)"], ["field", "Field name (e.g. Deposit address)"], ["addr", "Address or Pay ID"], ["note", "Note shown to buyer"]].forEach(([k, ph]) => {
+    const i = document.createElement("input"); i.placeholder = ph; i.dataset.k = k; i.value = m[k] || ""; d.appendChild(i);
+  });
+  const x = document.createElement("button"); x.textContent = "Remove"; x.onclick = () => d.remove(); d.appendChild(x);
+  $("ms").appendChild(d);
+}
+async function load() {
+  const r = await api();
+  if (!r.ok) { sessionStorage.removeItem("apw"); $("lm").textContent = (await r.json()).error; $("login").style.display = "block"; $("app").style.display = "none"; return; }
+  const { settings: s, log } = await r.json();
+  TH={mode:s.theme.mode,fixed:s.theme.fixed,rotate:s.theme.rotate||[]}; renderThemes();
+  $("login").style.display = "none"; $("app").style.display = "block";
+  $("gid").value = s.groupId; $("gn").value = s.groupName; $("tl").value = s.tagline; $("pr").value = s.price; $("su").value = s.supportUrl;
+  $("ms").innerHTML = ""; s.methods.forEach(row);
+  const tb = $("log"); tb.innerHTML = "";
+  log.forEach(l => {
+    const tr = document.createElement("tr");
+    [l.tx, new Date(l.at).toLocaleString(), l.status].forEach(t => { const td = document.createElement("td"); td.textContent = t; tr.appendChild(td); });
+    tb.appendChild(tr);
+  });
+}
+$("mfix").onclick=()=>{TH.mode="fixed";renderThemes()};$("mrot").onclick=()=>{TH.mode="rotate";if(!TH.rotate.length)TH.rotate=TL.map(x=>x[0]);renderThemes()};
+$("in").onclick = () => { pw = $("pw").value; sessionStorage.setItem("apw", pw); load(); };
+$("add").onclick = () => row();
+$("chk").onclick = async () => {
+  $("cm").style.color = "var(--mute)"; $("cm").textContent = "Checking…";
+  const d = await (await api({ action: "check", groupId: $("gid").value })).json();
+  if (!d.ok) { $("cm").style.color = "var(--err)"; $("cm").textContent = d.error || "Group not found. Add the bot to the group first."; return; }
+  const good = d.admin && d.canInvite;
+  $("cm").style.color = good ? "var(--ok)" : "var(--err)";
+  $("cm").textContent = good ? `Connected: ${d.title}` : `${d.title}: make the bot an admin with the "Invite users via link" permission.`;
+};
+$("save").onclick = async () => {
+  const methods = [...document.querySelectorAll("#ms .m")].map(m => Object.fromEntries([...m.querySelectorAll("input")].map(i => [i.dataset.k, i.value])));
+  const settings = { groupId: $("gid").value, groupName: $("gn").value, tagline: $("tl").value, price: $("pr").value, supportUrl: $("su").value, methods, theme: TH };
+  const r = await api({ action: "save", settings }), d = await r.json();
+  $("sm").style.color = r.ok ? "var(--ok)" : "var(--err)"; $("sm").textContent = r.ok ? "Saved." : d.error;
+  if (r.ok) load();
+};
+if (pw) load();
+</script></body></html>
