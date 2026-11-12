@@ -87,6 +87,8 @@ footer a{color:var(--ac)}
 [data-theme=bold] .sub,[data-theme=bold] .note,[data-theme=bold] .box small{color:#2b2b2b}
 [data-theme=bold] h1{font-size:clamp(2.4rem,10vw,3.4rem);letter-spacing:-.04em}
 [data-theme=club] .price{border-width:1px 0;background:none;padding:14px 0}
+.rc{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:.88rem;margin:10px 0}.rc dt{color:var(--mute)}.rc dd{text-align:right;word-break:break-all}
+.result a.alt{display:none;background:transparent;color:var(--ac);border:1px solid var(--ac)}
 @media (prefers-reduced-motion:no-preference){.result.show{animation:rise .35s ease-out}@keyframes rise{from{opacity:0;transform:translateY(8px)}}}
 </style>
 </head>
@@ -95,6 +97,7 @@ footer a{color:var(--ac)}
   <h1 id="gname"></h1>
   <p class="sub" id="tag"></p>
   <div class="price"><b id="price"></b><span>USDT · one-time access</span></div>
+  <p class="note" id="planNote" style="margin:-10px 0 18px"></p>
 
   <section class="step"><i>1</i>
     <h2>Send payment with Binance</h2>
@@ -106,7 +109,8 @@ footer a{color:var(--ac)}
 
   <section class="step"><i>2</i>
     <h2>Paste your transaction hash or ID</h2>
-    <input id="tx" placeholder="Transaction hash / Binance Pay order ID" autocomplete="off" spellcheck="false" aria-label="Transaction hash or ID">
+    <input id="first" placeholder="Transaction ID of your first payment" autocomplete="off" spellcheck="false" aria-label="First payment transaction ID" style="display:none;margin-bottom:10px">
+    <input id="tx" placeholder="Transaction hash, Binance transfer ID or Pay order ID" autocomplete="off" spellcheck="false" aria-label="Transaction hash or ID">
     <button class="go" id="go" type="button">Verify payment and get link</button>
     <div class="msg" id="msg" role="alert"></div>
   </section>
@@ -115,60 +119,103 @@ footer a{color:var(--ac)}
     <h2>Join the group</h2>
     <p class="note" style="margin-top:0">Your private link appears here after verification. It works once and expires in 1 hour. If it expires unused, submit the same transaction ID again for a new link.</p>
     <div class="result" id="res">
-      <h3>Payment confirmed</h3>
+      <h3 id="rh">Payment confirmed</h3>
+      <dl class="rc" id="rc"></dl>
       <a id="lnk" target="_blank" rel="noopener">Open group invite</a>
       <p id="exp"></p>
+      <a id="tgb" class="alt" target="_blank" rel="noopener">Get receipt &amp; reminders on Telegram</a>
     </div>
   </section>
-  <footer>Payments are verified automatically on Binance. Keep your transaction ID until you have joined.</footer>
+  <footer>Payments are verified automatically on Binance. Keep your transaction ID until you have joined. <a href="/?balance=ask">Paid the first part? Pay your remaining balance.</a></footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const THEMES = ["ledger","exchange","pass","neon","bold","club"];
+const Q = new URLSearchParams(location.search), PLAN = Q.get("plan") || "", BAL = Q.get("balance");
+const short = t => t.length > 24 ? t.slice(0, 10) + "…" + t.slice(-8) : t;
+const r2 = n => Math.round(n * 100) / 100;
 let CONFIG;
 function pick(m){
   $("lbl").textContent = m.field; $("addr").textContent = m.addr; $("net").textContent = m.note;
   [...$("tabs").children].forEach(b => b.setAttribute("aria-pressed", b.dataset.id === m.id));
 }
+async function loadDue(){
+  const id = $("first").value.trim(); if (!id) return;
+  const r = await fetch("/api/order?id=" + encodeURIComponent(id)), d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("msg").textContent = d.error || "Order not found."; return; }
+  $("msg").textContent = ""; $("price").textContent = d.due;
+  document.querySelector(".price span").textContent = "USDT balance due"; document.querySelector(".price").style.display = "flex";
+}
 async function init(){
   let have = ""; try { have = localStorage.getItem("theme") || ""; } catch {}
-  try { CONFIG = await (await fetch("/api/config?have=" + encodeURIComponent(have))).json(); } catch { CONFIG = null; }
-  const prev = new URLSearchParams(location.search).get("preview");
+  try { CONFIG = await (await fetch("/api/config?have=" + encodeURIComponent(have) + "&plan=" + encodeURIComponent(PLAN))).json(); } catch { CONFIG = null; }
+  const prev = Q.get("preview");
   const theme = THEMES.includes(prev) ? prev : (CONFIG && CONFIG.theme) || "club";
   document.documentElement.dataset.theme = theme;
   if (!prev && CONFIG && CONFIG.mode === "rotate") { try { localStorage.setItem("theme", theme); } catch {} }
   document.body.classList.add("ready");
   if (!CONFIG || !CONFIG.methods || !CONFIG.methods.length || !CONFIG.methods[0].addr) { $("gname").textContent = "Opening soon"; return; }
+  if (CONFIG.planInvalid) {
+    $("gname").textContent = "Link not valid"; $("tag").textContent = "This payment link is not valid. Please contact support.";
+    document.querySelector(".price").style.display = "none"; document.querySelectorAll(".step").forEach(x => x.style.display = "none"); return;
+  }
   document.title = CONFIG.groupName;
-  $("gname").textContent = CONFIG.groupName; $("tag").textContent = CONFIG.tagline; $("price").textContent = CONFIG.price;
   CONFIG.methods.forEach(m => {
     const b = document.createElement("button");
     b.type = "button"; b.textContent = m.label; b.dataset.id = m.id;
     b.onclick = () => pick(m); $("tabs").appendChild(b);
   });
   pick(CONFIG.methods[0]);
+  const hs = document.querySelectorAll(".step h2");
+  if (BAL !== null) {
+    $("gname").textContent = "Pay your remaining balance"; $("tag").textContent = CONFIG.groupName;
+    hs[0].textContent = "Send the remaining balance with Binance"; hs[1].textContent = "Paste your new transaction ID"; hs[2].textContent = "Your receipt";
+    $("first").style.display = "block"; $("first").value = BAL === "ask" ? "" : BAL; $("first").onchange = loadDue;
+    document.querySelector(".price").style.display = "none"; if ($("first").value) loadDue();
+  } else {
+    const P = CONFIG.plan;
+    $("gname").textContent = CONFIG.groupName; $("tag").textContent = CONFIG.tagline;
+    $("price").textContent = P ? P.first : CONFIG.price;
+    if (P && P.total > P.first) $("planNote").textContent = P.title + ": pay " + P.first + " USDT now and the remaining " + r2(P.total - P.first) + " USDT later. We will remind you on Telegram.";
+  }
   if (CONFIG.supportUrl) { const a = document.createElement("a");
     a.href = CONFIG.supportUrl; a.textContent = "Contact support"; a.target = "_blank"; a.rel = "noopener";
     document.querySelector("footer").append(" ", a); }
 }
 init();
 
+function showResult(d){
+  const r = d.receipt, rc = $("rc"); rc.innerHTML = "";
+  $("rh").textContent = d.done ? "Balance received" : "Payment confirmed";
+  [["Receipt", "#" + r.no], ["Plan", r.plan], ["Received", r.amount + " USDT"], ["Method", r.via], ["Time", new Date(r.at).toLocaleString()],
+   ["Transaction", short(r.tx)], ["Status", r.due > 0 ? "Balance due " + r.due + " USDT" : "Paid in full"]].forEach(([k, v]) => {
+    const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = k; dd.textContent = v; rc.append(dt, dd);
+  });
+  $("lnk").style.display = d.link ? "block" : "none";
+  if (d.link) { $("lnk").href = d.link; $("exp").textContent = "Valid until " + new Date(d.expires).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · single use"; } else $("exp").textContent = "";
+  $("tgb").style.display = d.tg ? "block" : "none"; if (d.tg) $("tgb").href = d.tg;
+  $("res").classList.add("show"); $("res").scrollIntoView({ behavior: "smooth", block: "center" });
+}
 $("copyAddr").onclick = async e => {
   try { await navigator.clipboard.writeText($("addr").textContent); e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy", 1500); } catch {}
 };
 $("go").onclick = async () => {
   const btn = $("go"), msg = $("msg"), res = $("res");
-  const txid = $("tx").value.trim();
+  const txid = $("tx").value.trim(), first = $("first").value.trim();
   msg.textContent = ""; res.classList.remove("show");
+  if (BAL !== null && !first) { msg.textContent = "Enter the transaction ID of your first payment."; return; }
   if (!txid) { msg.textContent = "Paste your transaction hash or ID first."; return; }
   btn.disabled = true; btn.textContent = "Verifying…";
   try {
-    const r = await fetch("/api/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ txid }) });
-    const d = await r.json();
+    let r, d;
+    for (let i = 0; i < 4; i++) { // payment may need a few seconds to appear in Binance
+      r = await fetch("/api/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(BAL !== null ? { txid, balanceFor: first } : { txid, plan: PLAN }) });
+      d = await r.json();
+      if (r.ok || r.status !== 402 || !/^No confirmed/.test(d.error || "") || i === 3) break;
+      btn.textContent = "Waiting for Binance confirmation…"; await new Promise(z => setTimeout(z, 4000));
+    }
     if (!r.ok) throw Object.assign(new Error(d.error || "Verification failed."), { code: d.code });
-    $("lnk").href = d.link;
-    $("exp").textContent = "Valid until " + new Date(d.expires).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · single use";
-    res.classList.add("show"); res.scrollIntoView({ behavior: "smooth", block: "center" });
+    showResult(d);
   } catch (e) { msg.textContent = e.message;
     if (e.code === "used" && CONFIG && CONFIG.supportUrl) { const a = document.createElement("a"); a.href = CONFIG.supportUrl; a.target = "_blank"; a.rel = "noopener"; a.textContent = " Contact support"; a.style.color = "var(--ac)"; msg.append(a); } }
   btn.disabled = false; btn.textContent = "Verify payment and get link";

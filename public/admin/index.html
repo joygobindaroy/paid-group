@@ -42,10 +42,25 @@ th{color:var(--mute);font-weight:500}
 <div class="modes"><button id="mfix">One theme for everyone</button><button id="mrot">Rotate for each new visitor</button></div>
 <div class="msg" id="thn" style="color:var(--mute);margin:0 0 10px"></div><div class="th" id="th"></div>
 
+<h2>Payment links (installments)</h2>
+<div class="msg" style="color:var(--mute);margin:0 0 10px">Extra links for people who cannot pay in full, for example pay 5 now and 5 later. Share the link with them.</div>
+<div id="pl"></div><button id="addp">Add payment link</button>
+
 <h2>Payment methods</h2><div id="ms"></div>
-<button id="add">Add method</button>
+<div class="row"><button id="add">Add method</button><button id="detect">Auto-fetch my Binance addresses</button></div>
+<div class="msg" id="dm" style="color:var(--mute)"></div>
+<div class="row" style="margin-top:8px"><button id="selftest">Check Binance connection</button></div>
+<div class="msg" id="st" style="white-space:pre-wrap;color:var(--mute)"></div>
 <div class="row" style="margin-top:22px"><button class="p" id="save">Save changes</button></div>
 <div class="msg" id="sm"></div>
+
+<h2>Classes and reminders</h2>
+<div class="msg" id="cs" style="color:var(--mute);margin:0 0 10px"></div>
+<div class="modes"><button id="cstart">First class started: begin daily reminders</button></div>
+<div class="modes"><button id="cstop">Stop reminders</button><button id="cnow">Send reminders now</button></div>
+<div class="msg" id="cm2"></div>
+<h2>Pending balances</h2>
+<table><thead><tr><th>First payment</th><th>Plan</th><th>Due</th><th>Reminders</th></tr></thead><tbody id="pend"></tbody></table>
 
 <h2>Recent payments</h2>
 <table><thead><tr><th>Transaction</th><th>Time</th><th>Status</th></tr></thead><tbody id="log"></tbody></table>
@@ -70,6 +85,24 @@ function renderThemes(){
     box.appendChild(c);
   });
 }
+function planRow(p = {}) {
+  const d = document.createElement("div"); d.className = "m";
+  [["title", "Title (e.g. Half payment)"], ["slug", "Link name (e.g. half)"], ["first", "Pay now (USDT)"], ["total", "Total price (USDT)"]].forEach(([k, ph]) => {
+    const i = document.createElement("input"); i.placeholder = ph; i.dataset.k = k; i.value = p[k] == null ? "" : p[k]; d.appendChild(i);
+  });
+  const l = document.createElement("div"); l.style.cssText = "font-size:.8rem;color:var(--mute);margin-bottom:8px;word-break:break-all";
+  const sl = d.querySelector("[data-k=slug]"), upd = () => { const v = sl.value.trim().toLowerCase(); l.textContent = v ? location.origin + "/?plan=" + v : ""; };
+  sl.oninput = upd; upd();
+  const x = document.createElement("button"); x.textContent = "Remove"; x.onclick = () => d.remove(); d.append(l, x); $("pl").appendChild(d);
+}
+const renderPlans = a => { $("pl").innerHTML = ""; a.forEach(planRow); };
+const readPlans = () => [...document.querySelectorAll("#pl .m")].map(m => Object.fromEntries([...m.querySelectorAll("input")].map(i => [i.dataset.k, i.value])));
+const renderClass = t => { $("cs").textContent = t ? "Reminders are ON since " + new Date(t).toLocaleDateString() + ". Students with a balance get a message every day." : "Reminders are OFF. Press the first button when your first class has started."; };
+function renderOrders(a) {
+  const tb = $("pend"); tb.innerHTML = "";
+  a.forEach(o => { const tr = document.createElement("tr");
+    [o.id.slice(0, 12) + "…", o.title, o.due + " USDT", o.tg ? "Telegram connected" : "Not connected"].forEach(t => { const td = document.createElement("td"); td.textContent = t; tr.appendChild(td); }); tb.appendChild(tr); });
+}
 let pw = sessionStorage.getItem("apw") || "";
 const api = (body) => fetch("/api/admin", body ? { method: "POST", headers: { "Content-Type": "application/json", "x-admin-password": pw }, body: JSON.stringify(body) } : { headers: { "x-admin-password": pw } });
 
@@ -84,7 +117,7 @@ function row(m = {}) {
 async function load() {
   const r = await api();
   if (!r.ok) { sessionStorage.removeItem("apw"); $("lm").textContent = (await r.json()).error; $("login").style.display = "block"; $("app").style.display = "none"; return; }
-  const { settings: s, log } = await r.json();
+  const D = await r.json(); const { settings: s, log } = D; renderPlans(s.plans || []); renderClass(D.classStart); renderOrders(D.orders || []);
   TH={mode:s.theme.mode,fixed:s.theme.fixed,rotate:s.theme.rotate||[]}; renderThemes();
   $("login").style.display = "none"; $("app").style.display = "block";
   $("gid").value = s.groupId; $("gn").value = s.groupName; $("tl").value = s.tagline; $("pr").value = s.price; $("su").value = s.supportUrl;
@@ -97,6 +130,28 @@ async function load() {
   });
 }
 $("mfix").onclick=()=>{TH.mode="fixed";renderThemes()};$("mrot").onclick=()=>{TH.mode="rotate";if(!TH.rotate.length)TH.rotate=TL.map(x=>x[0]);renderThemes()};
+$("addp").onclick = () => planRow();
+$("selftest").onclick = async () => {
+  $("st").style.color = "var(--mute)"; $("st").textContent = "Checking with Binance…";
+  const d = await (await api({ action: "selftest" })).json(), t = d.tests || [];
+  $("st").textContent = t.map(x => (x.ok ? "✔ " : "✖ ") + x.name + ": " + x.info).join("\n");
+  $("st").style.color = t.every(x => x.ok) ? "var(--ok)" : "var(--err)";
+};
+$("detect").onclick = async () => {
+  $("dm").style.color = "var(--mute)"; $("dm").textContent = "Fetching from Binance…";
+  const d = await (await api({ action: "detect" })).json();
+  (d.methods || []).forEach(m => {
+    const ex = [...document.querySelectorAll("#ms .m")].find(r => r.querySelector("[data-k=label]").value === m.label);
+    if (ex) { ["field", "addr", "note"].forEach(k => ex.querySelector("[data-k=" + k + "]").value = m[k]); } else row(m);
+  });
+  const e = (d.errors || []).join(" | ");
+  $("dm").style.color = e ? "var(--err)" : "var(--ok)";
+  $("dm").textContent = (d.methods || []).length ? "Addresses filled in. Press Save changes." + (e ? " Could not fetch: " + e : "") : "Could not fetch: " + (e || "unknown error") + ". You can type the addresses by hand.";
+};
+const cls = async (body) => { const r = await api(body), d = await r.json(); $("cm2").textContent = body.action === "remind" ? (d.note || "Sent " + d.sent + " reminder(s). " + (d.noTelegram ? d.noTelegram + " student(s) have not connected Telegram." : "")) : "Done."; $("cm2").style.color = "var(--ok)"; load(); };
+$("cstart").onclick = () => cls({ action: "class", on: true });
+$("cstop").onclick = () => cls({ action: "class", on: false });
+$("cnow").onclick = () => cls({ action: "remind" });
 $("in").onclick = () => { pw = $("pw").value; sessionStorage.setItem("apw", pw); load(); };
 $("add").onclick = () => row();
 $("chk").onclick = async () => {
@@ -109,7 +164,7 @@ $("chk").onclick = async () => {
 };
 $("save").onclick = async () => {
   const methods = [...document.querySelectorAll("#ms .m")].map(m => Object.fromEntries([...m.querySelectorAll("input")].map(i => [i.dataset.k, i.value])));
-  const settings = { groupId: $("gid").value, groupName: $("gn").value, tagline: $("tl").value, price: $("pr").value, supportUrl: $("su").value, methods, theme: TH };
+  const settings = { groupId: $("gid").value, groupName: $("gn").value, tagline: $("tl").value, price: $("pr").value, supportUrl: $("su").value, methods, theme: TH, plans: readPlans() };
   const r = await api({ action: "save", settings }), d = await r.json();
   $("sm").style.color = r.ok ? "var(--ok)" : "var(--err)"; $("sm").textContent = r.ok ? "Saved." : d.error;
   if (r.ok) load();

@@ -92,7 +92,7 @@ async function bn(path, params) {
   const q = new URLSearchParams({ ...params, timestamp: Date.now(), recvWindow: 10000 }).toString();
   const sig = crypto.createHmac('sha256', E.BINANCE_API_SECRET).update(q).digest('hex');
   const r = await fetch(`https://api.binance.com${path}?${q}&signature=${sig}`, { headers: { 'X-MBX-APIKEY': E.BINANCE_API_KEY } });
-  if (!r.ok) throw new Error('Binance API ' + r.status);
+  if (!r.ok) { let m = ''; try { m = (await r.json()).msg || ''; } catch { /* ignore */ } throw new Error(`Binance ${r.status}${m ? ': ' + m : ''}`); }
   return r.json();
 }
 
@@ -100,7 +100,7 @@ const THEMES = ['ledger', 'exchange', 'pass', 'neon', 'bold', 'club'];
 const DEFAULTS = {
   theme: { mode: 'fixed', fixed: 'club', rotate: [] },
   groupId: '', groupName: 'Your Group Name', tagline: 'A private community. Pay once, get instant access.',
-  price: 10, supportUrl: '',
+  price: 10, supportUrl: '', plans: [],
   methods: [{ id: 'm0', label: 'USDT · TRC20', field: 'Deposit address', addr: '', note: 'Send on the TRON (TRC20) network only.' }],
 };
 const getSettings = async () => {
@@ -108,4 +108,16 @@ const getSettings = async () => {
   return { ...DEFAULTS, ...(s ? JSON.parse(s) : {}) };
 };
 
-module.exports = { E, crypto, redis, tg, bn, getSettings, DEFAULTS, THEMES };
+
+const getJ = async k => { const v = await redis('GET', k); return v ? JSON.parse(v) : null; };
+const setJ = (k, o) => redis('SET', k, JSON.stringify(o));
+const send = (chat, text) => tg('sendMessage', { chat_id: chat, text, disable_web_page_preview: true });
+let BOT = '';
+const botName = async () => BOT || (BOT = ((await tg('getMe', {})).result || {}).username || '');
+const rate = async (key, max, sec) => {
+  const n = await redis('INCR', 'rl:' + key);
+  if (n === 1) await redis('EXPIRE', 'rl:' + key, sec);
+  return n <= max;
+};
+
+module.exports = { getJ, setJ, send, botName, rate, E, crypto, redis, tg, bn, getSettings, DEFAULTS, THEMES };
