@@ -1,5 +1,5 @@
 {
   "regions": ["sin1"],
-  "rewrites": [{ "source": "/admin", "destination": "/admin/index.html" }],
+  "rewrites": [{ "source": "/p/:code", "destination": "/index.html" }, { "source": "/admin", "destination": "/admin/index.html" }],
   "crons": [{ "path": "/api/cron", "schedule": "0 4 * * *" }]
 }
