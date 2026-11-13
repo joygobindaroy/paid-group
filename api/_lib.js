@@ -120,4 +120,8 @@ const rate = async (key, max, sec) => {
   return n <= max;
 };
 
-module.exports = { getJ, setJ, send, botName, rate, E, crypto, redis, tg, bn, getSettings, DEFAULTS, THEMES };
+const adminIds = () => String(E.ADMIN_TG_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+const isAdmin = id => adminIds().includes(String(id));
+const tell = async text => { try { await Promise.all(adminIds().map(id => send(id, text))); } catch { /* never block a payment */ } };
+
+module.exports = { adminIds, isAdmin, tell, getJ, setJ, send, botName, rate, E, crypto, redis, tg, bn, getSettings, DEFAULTS, THEMES };

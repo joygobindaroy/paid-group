@@ -1,7 +1,9 @@
 const { E, crypto, redis, tg, bn, getSettings, THEMES, getJ } = require('./_lib');
-const { sendReminders, due } = require('./_pay');
+const { sendReminders, due, fetchLive } = require('./_pay');
 
-const authed = req => {
+const authed = async req => {
+  const sess = String(req.headers['x-admin-session'] || '');
+  if (sess && (await redis('GET', 'ss:' + sess))) return true;
   const a = Buffer.from(String(req.headers['x-admin-password'] || ''));
   const b = Buffer.from(E.ADMIN_PASSWORD || '');
   return b.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -14,7 +16,19 @@ module.exports = async (req, res) => {
   const ip = String(req.headers['x-forwarded-for'] || 'x').split(',')[0].trim();
   const fails = parseInt(await redis('GET', 'bad:' + ip)) || 0;
   if (fails >= 10) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
-  if (!authed(req)) {
+  const b0 = req.body || {};
+  if (req.method === 'POST' && b0.action === 'login') { // one-time link from the bot (/login)
+    const t = clean(b0.token, 60);
+    if (t && (await redis('GET', 'lg:' + t))) {
+      await redis('DEL', 'lg:' + t);
+      const sess = crypto.randomBytes(24).toString('base64url');
+      await redis('SET', 'ss:' + sess, '1', 'EX', 43200);
+      return res.status(200).json({ session: sess });
+    }
+    await redis('INCR', 'bad:' + ip); await redis('EXPIRE', 'bad:' + ip, 900);
+    return res.status(401).json({ error: 'Login link expired. Send /login to the bot again.' });
+  }
+  if (!(await authed(req))) {
     await redis('INCR', 'bad:' + ip); await redis('EXPIRE', 'bad:' + ip, 900);
     return res.status(401).json({ error: 'Wrong password.' });
   }
@@ -44,15 +58,9 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, title: chat.result.title, admin: p.status === 'administrator' || p.status === 'creator', canInvite: p.status === 'creator' || !!p.can_invite_users });
   }
 
-  if (b.action === 'detect') { // read your own deposit addresses from Binance
-    const methods = [], errors = [];
-    for (const [net, label, note] of [['TRX', 'USDT · TRC20', 'Send on the TRON (TRC20) network only. From another Binance account it is free and instant: paste the TxID number from your history.'], ['BSC', 'USDT · BEP20', 'Send on the BNB Smart Chain (BEP20) network only. From another Binance account it is free and instant: paste the TxID number from your history.']]) {
-      try {
-        const d = await bn('/sapi/v1/capital/deposit/address', { coin: 'USDT', network: net });
-        if (d.address) methods.push({ label, field: 'Deposit address', addr: d.address, note }); else errors.push(`${label}: ${d.msg || 'no address returned'}`);
-      } catch (e) { errors.push(`${label}: ${e.message}`); }
-    }
-    return res.status(200).json({ methods, errors });
+  if (b.action === 'detect') { // read your own deposit addresses and Binance ID from Binance
+    const { items, errors } = await fetchLive();
+    return res.status(200).json({ methods: items, errors });
   }
 
   if (b.action === 'selftest') { // shows whether auto-verification can really work with your Binance key
@@ -69,6 +77,7 @@ module.exports = async (req, res) => {
       return d.length ? 'OK. Latest: ' + d.slice(0, 3).map(x => { const id = String(x.txId); return `${x.amount} USDT, ID "${id.length > 26 ? id.slice(0, 12) + '…' : id}"`; }).join('; ') : 'OK. No USDT deposits yet.';
     });
     await t('Deposit addresses', async () => { const d = await bn('/sapi/v1/capital/deposit/address', { coin: 'USDT', network: 'TRX' }); if (!d.address) throw new Error(d.msg || 'no address'); return 'OK'; });
+    await t('Your Binance ID (for transfers by Binance ID)', async () => { const a = await bn('/api/v3/account', {}); if (!a.uid) throw new Error('no ID returned'); return 'OK. Binance ID: ' + a.uid; });
     await t('Binance Pay history (zero fee)', async () => {
       const p = await bn('/sapi/v1/pay/transactions', { startTime: Date.now() - 14 * 864e5, endTime: Date.now(), limit: 100 });
       if (p.code && p.code !== '000000') throw new Error(p.message || p.code);
@@ -106,7 +115,7 @@ module.exports = async (req, res) => {
       if (plans.some(x => x.slug === slug)) return bad(res, `Link name "${slug}" is used twice.`);
       plans.push({ slug, title: clean(p.title, 60) || slug, first, total });
     }
-    await redis('SET', 'settings', JSON.stringify({ groupId, groupName: clean(s.groupName, 80), tagline: clean(s.tagline, 200), price, supportUrl: clean(s.supportUrl, 200), methods, theme: { mode, fixed, rotate }, plans }));
+    await redis('SET', 'settings', JSON.stringify({ groupId, groupName: clean(s.groupName, 80), tagline: clean(s.tagline, 200), price, supportUrl: clean(s.supportUrl, 200), methods, autoAddr: !!s.autoAddr, theme: { mode, fixed, rotate }, plans }));
     return res.status(200).json({ ok: true });
   }
   res.status(400).json({ error: 'Bad request' });

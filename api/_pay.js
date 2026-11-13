@@ -1,6 +1,6 @@
 // Shared payment logic used by the website (/api/verify), the Telegram bot and the daily reminders.
 const crypto = require('crypto');
-const { redis, tg, bn, getSettings, botName, send, getJ, setJ } = require('./_lib');
+const { redis, tg, bn, getSettings, botName, send, getJ, setJ, tell } = require('./_lib');
 
 const stripOff = s => String(s || '').trim().toLowerCase().replace(/^off-chain transfer\s*[:#-]?\s*/, '');
 const EPS = 1e-6;
@@ -8,7 +8,41 @@ const money = n => String(Math.round(n * 100) / 100);
 const due = o => Math.max(0, Math.round((o.total - o.paid) * 100) / 100);
 const planOf = (S, slug) => (S.plans || []).find(p => p.slug === slug) || { slug: 'full', title: 'Full access', first: S.price, total: S.price };
 const short = t => (t.length > 24 ? t.slice(0, 10) + '…' + t.slice(-8) : t);
-const methodsText = S => S.methods.map(m => `• ${m.label}: ${m.addr}`).join('\n');
+const methodsText = ms => ms.map(m => `• ${m.label}: ${m.addr}`).join('\n');
+
+// ---- your own deposit addresses and Binance ID, read straight from your Binance account ----
+const LIVE_NOTE = 'From another Binance account it is free and instant: paste the TxID number from your history.';
+async function fetchLive() {
+  const items = [], errors = [];
+  for (const [net, label, note] of [['TRX', 'USDT · TRC20', 'Send on the TRON (TRC20) network only. ' + LIVE_NOTE], ['BSC', 'USDT · BEP20', 'Send on the BNB Smart Chain (BEP20) network only. ' + LIVE_NOTE]]) {
+    try {
+      const d = await bn('/sapi/v1/capital/deposit/address', { coin: 'USDT', network: net });
+      if (d.address) items.push({ label, field: 'Deposit address', addr: d.address, note }); else errors.push(`${label}: ${d.msg || 'no address returned'}`);
+    } catch (e) { errors.push(`${label}: ${e.message}`); }
+  }
+  try {
+    const a = await bn('/api/v3/account', {});
+    if (a.uid) items.push({ label: 'Binance ID (zero fee)', field: 'Binance ID', addr: String(a.uid), note: 'In the Binance app open Pay > Send and enter this Binance ID. Free and instant. Then paste the Order ID from your receipt.' });
+    else errors.push('Binance ID: not returned');
+  } catch (e) { errors.push(`Binance ID: ${e.message}`); }
+  return { items, errors };
+}
+// When "automatic addresses" is on, the page/bot show live values (cached 6 hours); otherwise the saved ones.
+async function liveMethods(S) {
+  if (!S.autoAddr) return S.methods;
+  let c = await getJ('liveAddr');
+  if (!c || Date.now() - c.at > 6 * 3600 * 1000) {
+    const { items } = await fetchLive();
+    if (items.length) { c = { at: Date.now(), items }; await setJ('liveAddr', c); }
+  }
+  if (!c) return S.methods;
+  const out = S.methods.map(m => ({ ...m }));
+  for (const it of c.items) {
+    const m = out.find(x => x.label === it.label);
+    if (m) { m.addr = it.addr; m.field = it.field; if (!m.note) m.note = it.note; } else out.push({ id: 'a' + out.length, ...it });
+  }
+  return out.slice(0, 8);
+}
 
 let PAYC = { at: 0, list: [] };
 const resetPayCache = () => { PAYC = { at: 0, list: [] }; };
@@ -46,7 +80,7 @@ const NOT_FOUND = { error: 'No confirmed payment found for this ID. If you just 
 const BUSY = { error: 'Already processing. Try again in a few seconds.' };
 
 // Returns [httpStatus, body]. notify=false lets the bot send its own reply.
-async function processPayment({ txid, plan: slug, balanceFor, chat, notify = true }) {
+async function processPayment({ txid, plan: slug, code, balanceFor, chat, notify = true }) {
   const S = await getSettings();
   if (!S.groupId) return [503, { error: 'Not configured yet. Please contact support.' }];
   const tx = stripOff(txid);
@@ -71,12 +105,20 @@ async function processPayment({ txid, plan: slug, balanceFor, chat, notify = tru
     await setJ('ord:' + o.id, o);
     const receipt = receiptOf(S, o, t);
     if (notify && o.chat) await send(o.chat, 'Balance received. Thank you!\n\n' + receiptText(receipt));
+    await tell(`Balance received: ${money(t.amt)} USDT · receipt #${receipt.no}`);
     return [200, { receipt, done: true }];
   }
 
   // ---------- first payment (full price, or the "pay now" part of a plan) ----------
-  const P = planOf(S, slug || 'full');
-  if (slug && slug !== 'full' && P.slug !== slug) return [404, { error: 'This payment link is not valid.' }];
+  let P, pl = null;
+  if (code) { // private link made with /newlink in the bot
+    pl = await getJ('pl:' + code);
+    if (!pl || pl.revoked) return [404, { error: 'This payment link is not valid.' }];
+    P = { slug: 'p', title: pl.label || 'Private plan', first: pl.amount, total: Math.max(pl.amount, S.price) };
+  } else {
+    P = planOf(S, slug || 'full');
+    if (slug && slug !== 'full' && P.slug !== slug) return [404, { error: 'This payment link is not valid.' }];
+  }
   if (rec && (rec.used || rec.kind === 'balance')) {
     const o0 = rec.used ? await getJ('ord:' + tx) : null;
     return [409, { code: 'used', error: o0 && due(o0) > 0
@@ -103,10 +145,12 @@ async function processPayment({ txid, plan: slug, balanceFor, chat, notify = tru
   const link = out.result.invite_link;
   if (!rec) {
     const t = { tx, amt: info.amount, at: info.at || Date.now(), via: info.via };
-    o = { id: tx, plan: P.slug, title: P.title, total: P.total, paid: t.amt, rno: await redis('INCR', 'receiptNo'), tok: crypto.randomBytes(6).toString('base64url'), chat: chat || null, created: Date.now(), lastRemind: 0, txs: [t] };
+    o = { id: tx, plan: P.slug, link: code || null, title: P.title, total: P.total, paid: t.amt, rno: await redis('INCR', 'receiptNo'), tok: crypto.randomBytes(6).toString('base64url'), chat: chat || null, created: Date.now(), lastRemind: 0, txs: [t] };
     await setJ('ord:' + tx, o);
     await redis('SET', 'tk:' + o.tok, tx);
     await redis('LPUSH', 'txlog', tx); await redis('LTRIM', 'txlog', 0, 99);
+    if (pl) { pl.uses = (pl.uses || 0) + 1; await setJ('pl:' + code, pl); }
+    await tell(`New payment: ${money(o.paid)} USDT · ${P.title}${code ? ' · link ' + code.slice(0, 6) + '…' : ''}\nReceipt #${o.rno} · ${short(tx)}${due(o) > 0 ? '\nBalance due: ' + money(due(o)) + ' USDT' : ''}`);
     if (due(o) > 0) { await redis('LPUSH', 'orders', tx); await redis('LTRIM', 'orders', 0, 1999); }
   } else if (chat && !o.chat) { o.chat = chat; await setJ('ord:' + tx, o); }
   await setJ(key, { link, grp, exp, used: false, at: Date.now() });
@@ -125,11 +169,11 @@ async function sendReminders(host) {
     if (!o || due(o) <= 0) continue;
     if (!o.chat || o.blocked) { noTelegram++; continue; }
     if (Date.now() - (o.lastRemind || 0) < 20 * 3600 * 1000) continue;
-    const r = await send(o.chat, `Reminder: your remaining balance for ${S.groupName} is ${money(due(o))} USDT.\n\n${methodsText(S)}\n\nAfter paying, send the transaction ID right here. You can also pay on the website:\nhttps://${host}/?balance=${o.id}`);
+    const r = await send(o.chat, `Reminder: your remaining balance for ${S.groupName} is ${money(due(o))} USDT.\n\n${methodsText(await liveMethods(S))}\n\nAfter paying, send the transaction ID right here. You can also pay on the website:\nhttps://${host}/?balance=${o.id}`);
     o.lastRemind = Date.now(); if (!r.ok) o.blocked = true; else sent++;
     await setJ('ord:' + o.id, o);
   }
   return { sent, noTelegram };
 }
 
-module.exports = { stripOff, resetPayCache, processPayment, sendReminders, receiptOf, receiptText, planOf, methodsText, due, money };
+module.exports = { fetchLive, liveMethods, stripOff, resetPayCache, processPayment, sendReminders, receiptOf, receiptText, planOf, methodsText, due, money };

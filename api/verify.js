@@ -6,7 +6,7 @@ module.exports = async (req, res) => {
     const ip = String(req.headers['x-forwarded-for'] || 'x').split(',')[0].trim();
     if (!(await rate('web:' + ip, 30, 60))) return res.status(429).json({ error: 'Too many attempts. Please wait a minute.' });
     const b = req.body || {};
-    const [code, body] = await processPayment({ txid: b.txid, plan: b.plan, balanceFor: b.balanceFor });
+    const [code, body] = await processPayment({ txid: b.txid, plan: b.plan, code: b.code, balanceFor: b.balanceFor });
     res.status(code).json(body);
   } catch (e) {
     console.error(e);
